@@ -3,107 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"strconv"
 )
-
-func decodeBencodeToken(bencodedString *string, index *int) (interface{}, error) {
-	if len((*bencodedString)) == 0 {
-		return "", fmt.Errorf("empty bencoded string")
-	}
-	if (*bencodedString)[*index] == 'i' {
-		parsedInt, err := decodeInt(bencodedString, index)
-		if err != nil {
-			return "", fmt.Errorf("invalid bencoded token: %s at %d", (*bencodedString), *index)
-		}
-		return parsedInt, nil
-	}
-	if '0' <= (*bencodedString)[*index] && (*bencodedString)[*index] <= '9' {
-		parsedString, err := decodeString(bencodedString, index)
-		if err != nil {
-			return "", fmt.Errorf("invalid bencoded token: %s at %d", (*bencodedString), *index)
-		}
-		return parsedString, nil
-	}
-
-	if (*bencodedString)[*index] == 'l' {
-		parsedList, err := decodeList(bencodedString, index)
-		if err != nil {
-			return nil, fmt.Errorf("invalid bencoded list: %s at %d", (*bencodedString), *index)
-		}
-		return parsedList, nil
-	}
-	if (*bencodedString)[*index] == 'd' {
-		parsedDict, err := decodeDict(bencodedString, index)
-		if err != nil {
-			return nil, fmt.Errorf("invalid bencoded dictionary: %s at %d", (*bencodedString), *index)
-		}
-		return parsedDict, nil
-	}
-	return "", fmt.Errorf("invalid bencoded string: %s", (*bencodedString))
-}
-
-func decodeInt(bencodedString *string, index *int) (int, error) {
-	*index++
-	beginIndex := *index
-	for (*bencodedString)[*index] != 'e' {
-		*index++
-	}
-	endIndex := *index
-	parsedInt, err := strconv.Atoi((*bencodedString)[beginIndex:endIndex])
-	if err != nil {
-		return 0, err
-	}
-	return parsedInt, nil
-}
-
-func decodeString(bencodedString *string, index *int) (string, error) {
-	beginIndex := *index
-	for (*bencodedString)[*index] != ':' && *index < len((*bencodedString)) {
-		*index++
-	}
-	endIndex := *index
-	strLength, err := strconv.Atoi((*bencodedString)[beginIndex:endIndex])
-	if err != nil {
-		return "", err
-	}
-	*index++
-	parsedString := (*bencodedString)[*index : *index+strLength]
-	*index += strLength - 1
-	return parsedString, nil
-}
-
-func decodeList(bencodedString *string, index *int) ([]interface{}, error) {
-	*index++
-	parsedList := []interface{}{}
-	for (*bencodedString)[*index] != 'e' {
-		item, err := decodeBencodeToken(bencodedString, index)
-		if err != nil {
-			return nil, err
-		}
-		parsedList = append(parsedList, item)
-		*index++
-	}
-	return parsedList, nil
-}
-
-func decodeDict(bencodedString *string, index *int) (map[string]interface{}, error) {
-	*index++
-	dict := map[string]interface{}{}
-	for (*bencodedString)[*index] != 'e' {
-		key, err := decodeString(bencodedString, index)
-		if err != nil {
-			return nil, err
-		}
-		*index++
-		value, err := decodeBencodeToken(bencodedString, index)
-		if err != nil {
-			return nil, err
-		}
-		dict[key] = value
-		*index++
-	}
-	return dict, nil
-}
 
 // function to pretty print object parsed from bencode
 func prettyPrint(obj interface{}, indent string) {
@@ -144,8 +44,129 @@ func extractTorrentInfoFromFile(filePath string) (map[string]interface{}, error)
 	return parsedObject, nil
 }
 
+func torrentMapObjectToTorrenFileObject(object map[string]interface{}) (TorrentFile, error) {
+	torrent := TorrentFile{}
+	infoMap, ok := object["info"].(map[string]interface{})
+	if !ok {
+		return TorrentFile{}, fmt.Errorf("info is not a map")
+	}
+
+	pieceLength, ok := infoMap["piece length"].(int)
+	if !ok {
+		return TorrentFile{}, fmt.Errorf("piece length is not an int")
+	}
+
+	pieces, ok := infoMap["pieces"].(string)
+	if !ok {
+		return TorrentFile{}, fmt.Errorf("pieces is not a string")
+	}
+	name, ok := infoMap["name"].(string)
+	if !ok {
+		return TorrentFile{}, fmt.Errorf("name is not a string")
+	}
+	var length *int
+	var files *[]DictionnaryFile
+	if lengthValue, ok := infoMap["length"].(int); ok {
+		length = &lengthValue
+	} else if filesInfoMap, ok := infoMap["files"].([]interface{}); ok {
+		var fileList []DictionnaryFile
+		for _, file := range filesInfoMap {
+			fileMap, ok := file.(map[string]interface{})
+			if !ok {
+				return TorrentFile{}, fmt.Errorf("file is not a map")
+			}
+			lengthValue, ok := fileMap["length"].(int)
+			if !ok {
+				return TorrentFile{}, fmt.Errorf("file length is not an int")
+			}
+			path, ok := fileMap["path"].([]interface{})
+			if !ok {
+				return TorrentFile{}, fmt.Errorf("file path is not a list")
+			}
+			pathStrings := make([]string, len(path))
+			for i, p := range path {
+				pathString, ok := p.(string)
+				if !ok {
+					return TorrentFile{}, fmt.Errorf("file path element is not a string")
+				}
+				pathStrings[i] = pathString
+			}
+			fileList = append(fileList, DictionnaryFile{
+				length: lengthValue,
+				path:   pathStrings,
+			})
+		}
+		files = &fileList
+	}
+
+	info := Info{
+		pieceLength: pieceLength,
+		pieces:      pieces,
+		name:        name,
+		length:      length,
+		files:       files,
+	}
+	torrent.info = &info
+
+	announce, ok := object["announce"].(string)
+	if !ok {
+		return TorrentFile{}, fmt.Errorf("announce is not a string")
+	}
+	torrent.announce = announce
+
+	creationDate, ok := object["creation date"].(int)
+	if !ok {
+		torrent.creationDate = nil
+	} else {
+		torrent.creationDate = &creationDate
+	}
+	comment, ok := object["comment"].(string)
+	if !ok {
+		torrent.comment = nil
+	} else {
+		torrent.comment = &comment
+	}
+	createdBy, ok := object["created by"].(string)
+	if !ok {
+		torrent.createdBy = nil
+	} else {
+		torrent.createdBy = &createdBy
+	}
+	announcementList, ok := object["announce-list"].([]string)
+	if !ok {
+		torrent.announcementList = nil
+	} else {
+		torrent.announcementList = &announcementList
+	}
+
+	return torrent, nil
+}
+
+type TorrentFile struct {
+	info     *Info
+	announce string
+	//Optionnal
+	announcementList *[]string
+	creationDate     *int
+	comment          *string
+	createdBy        *string
+}
+
+type Info struct {
+	pieceLength int
+	pieces      string
+	name        string             //Name of the file or of the directory to store filed if mutli file
+	length      *int               //Single file
+	files       *[]DictionnaryFile //Multi file
+}
+
+type DictionnaryFile struct {
+	length int
+	path   []string
+}
+
 func main() {
-	path := "./resources/alice.torrent"
+	path := "../resources/debian.iso.torrent"
 	//open file
 	fileContent, err := os.ReadFile(path)
 	if err != nil {
@@ -153,18 +174,14 @@ func main() {
 		return
 	}
 	bencodedString := string(fileContent)
-	index := 0
-	parsedObject, err := decodeBencodeToken(&bencodedString, &index)
+	torrentFile, err := decodeTorrentFileString(&bencodedString)
 	if err != nil {
-		fmt.Printf("Error decoding bencoded string: %v\n", err)
+		fmt.Printf("Error decoding torrent file: %v\n", err)
 		return
 	}
-	fmt.Println("Parsed Object:")
-	prettyPrint(parsedObject, "")
-	fmt.Println("Index after parsing:", index)
-	if index != len(bencodedString) {
-		fmt.Printf("Warning: Index %d does not match the length of the bencoded string %d\n", index, len(bencodedString))
-	} else {
-		fmt.Println("Index matches the length of the bencoded string.")
-	}
+	fmt.Print(torrentFile)
+	fmt.Print(torrentFile.info)
+	fmt.Print(torrentFile.info.pieceLength)
+	fmt.Print(torrentFile.info.length)
+	
 }
